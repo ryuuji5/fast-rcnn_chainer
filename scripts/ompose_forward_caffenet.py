@@ -10,7 +10,7 @@ import argparse
 import cv2 as cv
 import numpy as np
 import cPickle as pickle
-from VGG_CNN_M_1024 import VGG_CNN_M_1024
+from CaffeNet import CaffeNet
 from chainer import cuda
 from cython_nms import nms
 
@@ -24,13 +24,14 @@ PIXEL_MEANS = np.array([102.9801, 115.9465, 122.7717], dtype=np.float32)
 
 
 def get_model():
-    vgg_M = pickle.load(open('models/VGG_CNN_M_1024.chainermodel'))
+    #vgg = pickle.load(open('models/VGG.chainermodel'))
+    caffenet = pickle.load(open('models/CaffeNet.chainermodel'))
     #vgg.to_gpu()
     if args.gpu >= 0:
-        vgg_M.to_gpu()
+        caffenet.to_gpu()
 
     #return vgg
-    return vgg_M
+    return caffenet
 
 
 def img_preprocessing(orig_img, pixel_means, max_size=1000, scale=600):
@@ -115,7 +116,7 @@ if __name__ == '__main__':
     parser.add_argument('--min_size', type=int, default=500)
     parser.add_argument('--nms_thresh', type=float, default=0.3)
     parser.add_argument('--conf', type=float, default=0.8)
-    parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--gpu', type=int, default=-1)
     args = parser.parse_args()
     test_fn = '%s/data/panorama/joint.csv' % OP_PATH
     test_dl = np.array([l.strip() for l in open(test_fn).readlines()])
@@ -124,7 +125,7 @@ if __name__ == '__main__':
     else:
         xp = np
     #vgg = get_model()
-    vgg_M = get_model()
+    caffenet = get_model()
     for i, datum in enumerate(test_dl):
         datum = datum.split(',')
         if datum[2] > 100:
@@ -132,11 +133,15 @@ if __name__ == '__main__':
             orig_image = np.hstack([orig_image, orig_image[:,:400,:]])
             img, im_scale = img_preprocessing(orig_image, PIXEL_MEANS)
             orig_rects = get_bboxes(orig_image, im_scale, min_size=args.min_size)
-
+            print(img)
+            cv.imshow('img', img)
+            cv.waitKey()
             img = xp.asarray(img)
+
             rects = xp.asarray(orig_rects)
 
-            cls_score, bbox_pred = vgg_M.forward(img[xp.newaxis, :, :, :], rects)
+            #cls_score, bbox_pred = vgg.forward(img[xp.newaxis, :, :, :], rects)
+            cls_score, bbox_pred = caffenet.forward(img[xp.newaxis, :, :, :], rects)
 
             clss = cuda.cupy.asnumpy(cls_score.data)
             bbox = cuda.cupy.asnumpy(bbox_pred.data)

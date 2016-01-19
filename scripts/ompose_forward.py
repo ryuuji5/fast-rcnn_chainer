@@ -10,7 +10,7 @@ import argparse
 import cv2 as cv
 import numpy as np
 import cPickle as pickle
-from caffenet import CaffeNet
+from CaffeNet import CaffeNet
 from chainer import cuda
 from cython_nms import nms
 

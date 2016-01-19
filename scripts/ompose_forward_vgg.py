@@ -13,6 +13,7 @@ import cPickle as pickle
 from VGG import VGG
 from chainer import cuda
 from cython_nms import nms
+from progressbar import *
 
 CLASSES = ('__background__',
            'aeroplane', 'bicycle', 'bird', 'boat',
@@ -63,7 +64,7 @@ def get_bboxes(orig_img, im_scale, min_size, dedup_boxes=1. / 16):
     return rects
 
 
-def draw_result(out, im_scale, clss, bbox, rects, nms_thresh, conf):
+def draw_result(out, im_scale, clss, bbox, rects, nms_thresh, conf, im_name):
     out = cv.resize(out, None, None, fx=im_scale, fy=im_scale,
                     interpolation=cv.INTER_LINEAR)
     for cls_id in range(1, 21):
@@ -75,6 +76,9 @@ def draw_result(out, im_scale, clss, bbox, rects, nms_thresh, conf):
         orig_rects = cuda.cupy.asnumpy(rects)[keep, 1:]
 
         inds = np.where(dets[:, -1] >= conf)[0]
+        if CLASSES[cls_id] == 'person' and len(inds) == 0:
+            print('not detected...')
+            print >> box_write, '0,%s,%s'%(CLASSES[cls_id], os.path.basename(im_name))
         for i in inds:
             _bbox = dets[i, :4]
             x1, y1, x2, y2 = orig_rects[i]
@@ -93,7 +97,13 @@ def draw_result(out, im_scale, clss, bbox, rects, nms_thresh, conf):
             y1 = _center_y - 0.5 * _height
             x2 = _center_x + 0.5 * _width
             y2 = _center_y + 0.5 * _height
+            if CLASSES[cls_id] == 'person':
+                print(('1,%s,%s,%s,%s,%s,%s,%s') %(CLASSES[cls_id], os.path.basename(im_name),x1,y1,x2,y2,dets[i,4]))
+                print >> box_write, ('1,%s,%s,%s,%s,%s,%s,%s') %(CLASSES[cls_id], os.path.basename(im_name),x1,y1,x2,y2,dets[i,4])
+            else:
+                print >> other_write, ('1,%s,%s,%s,%s,%s,%s,%s') %(CLASSES[cls_id], os.path.basename(im_name),x1,y1,x2,y2,dets[i,4])
 
+            """
             cv.rectangle(out, (int(x1), int(y1)), (int(x2), int(y2)),
                          (0, 0, 255), 2)
             ret, baseline = cv.getTextSize(CLASSES[cls_id],
@@ -102,7 +112,7 @@ def draw_result(out, im_scale, clss, bbox, rects, nms_thresh, conf):
                          (int(x1) + ret[0], int(y2)), (0, 0, 255), -1)
             cv.putText(out, CLASSES[cls_id], (int(x1), int(y2) - baseline),
                        cv.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 1)
-
+            """
             print CLASSES[cls_id], dets[i, 4]
 
     return out
@@ -114,7 +124,7 @@ if __name__ == '__main__':
     parser.add_argument('--min_size', type=int, default=500)
     parser.add_argument('--nms_thresh', type=float, default=0.3)
     parser.add_argument('--conf', type=float, default=0.8)
-    parser.add_argument('--gpu', type=int, default=-1)
+    parser.add_argument('--gpu', type=int, default=0)
     args = parser.parse_args()
     test_fn = '%s/data/panorama/joint.csv' % OP_PATH
     test_dl = np.array([l.strip() for l in open(test_fn).readlines()])
@@ -122,23 +132,29 @@ if __name__ == '__main__':
         xp = cuda.cupy if cuda.available else np
     else:
         xp = np
+    pbar = ProgressBar(maxval = len(test_dl)).start()
     vgg = get_model()
     for i, datum in enumerate(test_dl):
+        pbar.update(pbar.currval + 1)            
         datum = datum.split(',')
+        im_name = datum[1]
+        box_write = open('output/panorama_det_person.csv', 'a')
+        other_write = open('output/panorama_det_other.csv', 'a')
         if datum[2] > 100:
-            orig_image = cv.imread('%s/data/panorama/images/%s'%(OP_PATH, datum[1]))
+            orig_image = cv.imread('%s/data/panorama/images/%s'%(OP_PATH, im_name))
             orig_image = np.hstack([orig_image, orig_image[:,:400,:]])
             img, im_scale = img_preprocessing(orig_image, PIXEL_MEANS)
+            start_time = time.time()
             orig_rects = get_bboxes(orig_image, im_scale, min_size=args.min_size)
 
             img = xp.asarray(img)
             rects = xp.asarray(orig_rects)
 
             cls_score, bbox_pred = vgg.forward(img[xp.newaxis, :, :, :], rects)
+            print('detection took {:.3f}s').format(time.time()-start_time)
 
             clss = cuda.cupy.asnumpy(cls_score.data) if args.gpu >= 0 else cls_score.data
             bbox = cuda.cupy.asnumpy(bbox_pred.data) if args.gpu >= 0 else bbox_pred.data
-            result = draw_result(orig_image, im_scale, clss, bbox, orig_rects,
-                                 args.nms_thresh, args.conf)
-            cv.imwrite('output/panorama/%s'%datum[1], result)
-            print(i)
+            result = draw_result(orig_image, im_scale, clss, bbox, orig_rects, args.nms_thresh, args.conf, im_name)
+            #cv.imwrite('output/panorama/%s'%datum[1], result)
+    pbar.finish()
