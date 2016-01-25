@@ -146,10 +146,11 @@ if __name__ == '__main__':
             img, im_scale = img_preprocessing(orig_image, PIXEL_MEANS)
             start_time = time.time()
             orig_rects = get_bboxes(orig_image, im_scale, min_size=args.min_size)
-
+            print(img.shape)
             img = xp.asarray(img)
             rects = xp.asarray(orig_rects)
-
+            print(rects.shape)
+            print(rects[0:5])
             cls_score, bbox_pred = vgg.forward(img[xp.newaxis, :, :, :], rects)
             print('detection took {:.3f}s').format(time.time()-start_time)
 
