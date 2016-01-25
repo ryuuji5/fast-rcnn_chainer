@@ -1,0 +1,5 @@
+INFO:root:Namespace(batchsize=128, conf=0.8, cpu_mode=False, epoch=150, epoch_offset=0, gpu=0, min_size=500, model='VGG', net='vgg16', nms_thresh=0.3, restart_from=None, result_dir=None)
+INFO:root:# of training data:15303
+INFO:root:# of test data:1537
+INFO:root:2016-01-25_18-01-25
+INFO:root:start training...

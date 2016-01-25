@@ -4,6 +4,7 @@
 data
 fast-rcnn
 dlib
+result
 
 *.so
 *.pyc

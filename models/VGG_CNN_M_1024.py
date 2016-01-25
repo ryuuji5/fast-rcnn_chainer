@@ -11,7 +11,7 @@ from roi_pooling_2d_vggM import roi_pooling_2d
 class VGG_CNN_M_1024(FunctionSet):
 
     def __init__(self):
-        super(VGG, self).__init__(
+        super(VGG_CNN_M_1024, self).__init__(
             conv1=F.Convolution2D(3, 96, 7, stride=2, pad=0),
             conv2=F.Convolution2D(96, 256, 5, stride=2, pad=1),
             conv3=F.Convolution2D(256, 512, 3, stride=1, pad=1),
