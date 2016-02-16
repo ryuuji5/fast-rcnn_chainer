@@ -8,38 +8,22 @@ from chainer.utils import type_check
 class SmoothL1Loss(function.Function):
 
     """Compute Smooth L1 Loss"""
+    def check_type_forward(self, in_types):
+        type_check.expect(in_types.size() == 2)
 
-    def forward_gpu(self, inputs):
-        label, rect = inputs
-        cuda.cupy.ElementwiseKernel(
-            'raw float32 label, raw float32 rect',
-            'float32 loss',
-            '''
-            loss = 0
-            for (int i=0; i<4; i++)
-            {
-                float gap = rect[i] - label[i]
-                if(gap > -1 || gap < 1)
-                {
-                    loss += 0.5 * gap * gap
-                }
-                else
-                {
-                    if(gap < 0)
-                    {
-                        gap = -gap
-                    }
-                    loss += gap - 0.5
-                }
-            }
-            ''',
-            'smooth_l1_loss'
-            )(label, rect)
-        return loss,
+    def forward(self, inputs):
+        xp = cuda.get_array_module(*inputs)
+        x0, x1 = inputs
+        self.diff = x0 - x1
+        y = (0.5 * xp.square(self.diff) * (xp.abs(self.diff) < 1) +
+             (xp.abs(self.diff) - 0.5) * (xp.abs(self.diff) >= 1))
+        return y.sum(axis=1),
 
-    #def backward_gpu(self, inputs, gy):
-
-       # return bottom_diff, None
+    def backward(self, inputs, gy):
+        xp = cuda.get_array_module(*inputs)
+        gx = (self.diff * (xp.abs(self.diff) < 1) +
+              xp.sign(self.diff) * (xp.abs(self.diff) >= 1))
+        return gx, -gx
 
 def smooth_l1_loss(label, rect):
-    return SmoothL1Loss(label, rect)
+    return SmoothL1Loss(x, t)

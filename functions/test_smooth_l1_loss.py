@@ -1,7 +1,6 @@
 import unittest
 
 import numpy
-import six
 
 import chainer
 from chainer import cuda
@@ -10,7 +9,6 @@ from chainer import gradient_check
 from chainer import testing
 from chainer.testing import attr
 from chainer.testing import condition
-
 from smooth_l1_loss import smooth_l1_loss
 functions.smooth_l1_loss = smooth_l1_loss
 
@@ -18,48 +16,48 @@ functions.smooth_l1_loss = smooth_l1_loss
 class TestSmoothL1Loss(unittest.TestCase):
 
     def setUp(self):
-        self.x = numpy.random.randn(4, 3, 12, 8).astype(numpy.float32)
-        self.rois = numpy.array([
-            [0, 1, 1, 6, 6],
-            [2, 6, 2, 7, 11],
-            [1, 3, 1, 5, 10],
-            [0, 3, 3, 3, 3]
-        ], dtype=numpy.float32)
-        self.gy = numpy.random.uniform(-1, 1,
-                                       (4, 3, 7, 7)).astype(numpy.float32)
-        #    (4, 3, 7, 7)).astype(numpy.float32)
+        self.shape = (4, 10)
+        self.x = (numpy.random.random(self.shape) - 0.5) * 20
+        self.x = self.x.astype(numpy.float32)
+        self.t = numpy.random.random(self.shape).astype(numpy.float32)
 
-    def check_forward(self, x_data):
+    def check_forward(self, x_data, t_data):
         x = chainer.Variable(x_data)
-        y = functions.smooth_l1_loss(x, rois)
-        self.assertEqual(y.data.dtype, numpy.float32)
-        y_data = cuda.to_cpu(y.data)
+        t = chainer.Variable(t_data)
+        loss = functions.smooth_l1_loss(x, t)
+        self.assertEqual(loss.data.dtype, numpy.float32)
+        loss_value = cuda.to_cpu(loss.data)
 
-        self.assertEqual(self.gy.shape, y_data.shape)
+        diff_data = cuda.to_cpu(x_data) - cuda.to_cpu(t_data)
+        expected_result = numpy.zeros(self.shape)
+        mask = numpy.abs(diff_data) < 1
+        expected_result[mask] = 0.5 * diff_data[mask]**2
+        expected_result[~mask] = numpy.abs(diff_data[~mask]) - 0.5
+        loss_expect = numpy.sum(expected_result, axis=1)
+        numpy.testing.assert_allclose(loss_value, loss_expect)
+
+    @condition.retry(3)
+    def test_forward_cpu(self):
+        self.check_forward(self.x, self.t)
 
     @attr.gpu
     @condition.retry(3)
-    def test_forward_gpu_no_cudnn(self):
-        self.check_forward(cuda.to_gpu(self.x), cuda.to_gpu(self.rois))
+    def test_forward_gpu(self):
+        self.check_forward(cuda.to_gpu(self.x), cuda.to_gpu(self.t))
 
-    def check_backward(self, x_data, roi_data, y_grad):
-        x = chainer.Variable(x_data)
-        rois = chainer.Variable(roi_data)
-        y = functions.smooth_l1_loss(x, rois)
-        y.grad = y_grad
-        y.backward()
+    def check_backward(self, x_data, t_data):
+        gradient_check.check_backward(
+            functions.SmoothL1Loss(),
+            (x_data, t_data), None, eps=1e-2, atol=1e-3)
 
-        func = y.creator
-        f = lambda: func.forward((x.data, rois.data))
-        gx, gr = gradient_check.numerical_grad(f, (x.data, rois.data),
-                                               (y.grad,))
-
-        gradient_check.assert_allclose(cuda.to_cpu(gx), cuda.to_cpu(x.grad))
+    @condition.retry(3)
+    def test_backward_cpu(self):
+        self.check_backward(self.x, self.t)
 
     @attr.gpu
     @condition.retry(3)
-    def test_backward_gpu_no_cudnn(self):
-        self.check_backward(cuda.to_gpu(self.x), cuda.to_gpu(self.rois),
-                            cuda.to_gpu(self.gy))
+    def test_backward_gpu(self):
+        self.check_backward(cuda.to_gpu(self.x), cuda.to_gpu(self.t))
+
 
 testing.run_module(__name__, __file__)
