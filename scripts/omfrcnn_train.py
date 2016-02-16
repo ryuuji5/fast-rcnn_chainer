@@ -48,14 +48,14 @@ NETS = {'vgg16': ('VGG16',
                      'CaffeNet.chainermodel')}
 
 OMPOSE_PATH = '/home/aolab/Codes/ompose'
+data_dir = '%s/data/normal/images' % OMPOSE_PATH
 
 def load_dataset(args):
-    datadir = '%s/data/panorama'%OMPOSE_PATH
-    train_fn = '%s/det_label_train.csv' % datadir
-    test_fn = '%s/det_label_test.csv' % datadir
+    data_path = '%s/data/normal'%OMPOSE_PATH
+    train_fn = '%s/det_label_train.csv' % data_path
+    test_fn = '%s/det_label_test.csv' % data_path
     train_dl = np.array([l.strip() for l in open(train_fn).readlines()])
     test_dl = np.array([l.strip() for l in open(test_fn).readlines()])
-    print(len(train_dl), len(test_dl))
     return train_dl, test_dl
 
 def create_result_dir(args):
@@ -87,13 +87,15 @@ def get_model_optimizer(result_dir, args):
 
     return model, optimizer
 
-def fliplr(args, img,train_dl):
+def fliplr(args, img, train_dl, rects):
     if np.random.randint(2) == 1 and args.flip == True:
-        img = np.fliplr(img)
-        img_col = img.shape[2]
+        img = cv.flip(img,1)
+        img_col = int(img.shape[1])
         train_dl[1] = img_col - train_dl[1]
         train_dl[3] = img_col - train_dl[3]
-    return img, train_dl[1:5]
+        rects[1] = img_col - rects[1]
+        rects[3] = img_col - rects[3]
+    return img, train_dl, rects
 
 def eval_rects(rects, gt):
     # calc t_size
@@ -101,14 +103,14 @@ def eval_rects(rects, gt):
     t_width = gt[2] - gt[0]
     t_S = t_heith * t_width
     # calc result size
-    r_heith = r_rect_bottom - r_rect_top
-    r_width = r_rect_right - r_rect_left
+    r_heith = rects[3] - rects[1]
+    r_width = rects[2] - rects[0]
     r_S = r_heith * r_width
     # calc IoU
-    top = max(gt[1],r_rect_top)
-    left = max(gt[0],r_rect_left)
-    bottom = min(gt[3],r_rect_bottom)
-    right = min(gt[2],r_rect_right)
+    top = max(gt[1],rects[1])
+    left = max(gt[0],rects[0])
+    bottom = min(gt[3],rects[3])
+    right = min(gt[2], rects[2])
     heith = bottom - top
     width = right - left
     if heith <= 0 or width <= 0:
@@ -120,48 +122,77 @@ def eval_rects(rects, gt):
 
 def load_data(args, input_q, data_q, perm):
     c = args.channel
-    w = 1000
-    h = 271
+    w = 750
+    h = 750
 
     while True:
-        x_batch = input_q.get()
-        if x_batch is None:
+        all_data = input_q.get()
+        if all_data is None:
             break
-        input_data = np.zeros((2, c, h, w))
-        label_data = np.zeros((2, 4))
-        rects = np.zeros((2, 4))
-        for i, x in  enumerate(x_batch):
-            orig_img = cv.imread(train_dl[perm[i]])
-            orig_img = np.hstack([orig_img, orig_img[:,:400,:]])
-            img, gt = fliplr(args,orig_img,train_dl[perm[i]])
-            img, im_scale = img_preprocessing(img, PIXEL_MEANS)
-            orig_rects = get_bboxes(img, im_scale, min_size=args.min_size)
-            rects[i] = eval_rects(orig_rects, gt)
-            input_data[i] = img
-            label_data[i] = gt
-        #
+        input_data = np.zeros((args.batchsize, c, h, w))
+        label_data = np.zeros((args.batchsize, 4))
+        obj_prs = np.zeros((args.batchsize, 4))
+        cls = np.zeros((args.batchsize, 2))
+        p_count = 0
+        n_count = 0
+        for i, x in  enumerate(all_data):
+            x=np.asarray(x.split(','))
+            orig_img = cv.imread('%s/%s'%(data_dir,x[0]))
+            img = orig_img[50:800, 650:1400]
+            gt = np.asarray(x[1:5],dtype = int)
+            gt[0] -= 650 
+            gt[1] -=  50
+            gt[2] -= 650 
+            gt[3] -=  50
 
-        data_q.put([input_data, gt])
+            orig_rects = open('%s/data/EB_normal/%s'%(OMPOSE_PATH, x[0].replace('png','csv')))
+            for j, rects in enumerate(orig_rects):
+                rects = np.asarray(rects.split(','))[0:4]
+                rects = np.asarray(rects, dtype = int)
+                img, gt, rects = fliplr(args,img, gt, rects)
+                IoU = eval_rects(rects, gt)
+                if IoU > 0.5:
+                    #cv.rectangle(img, (gt[0],gt[1]),(gt[2],gt[3]),(255,0,0), 2)
+                    #cv.rectangle(img, (rects[0],rects[1]),(rects[2],rects[3]),(0,255,0), 2)
+                    #cv.imshow('img',img)
+                    #cv.waitKey()
+                    cls[p_count + n_count -1] = [0, 1]
+                    p_count += 1
+                elif IoU >= 0.1 and n_count <= p_count*3:
+                    cls[p_count + n_count -1] = [1, 0]
+                    n_count += 1
+                else:
+                    continue
+                input_data[p_count + n_count -1] = img.transpose((2,0,1))
+                label_data[p_count + n_count -1] = gt
+                obj_prs[p_count + n_count -1] = rects
+                if p_count + n_count == args.batchsize:
+                    p_count = 0
+                    n_count = 0        
+                    print('putting', label_data)
+                    data_q.put([input_data, cls, obj_prs, label_data])
 
 def eval(test_dl, N, model, trans, args, input_q, data_q):
+    if args.gpu >= 0:
+        xp = cuda.cupy if cuda.available else np
+    else:
+        xp = np
     widgets = ["Eval : ", Percentage(), Bar()]
     pbar = ProgressBar(maxval = N, widgets = widgets).start()
     sum_loss = 0
 
     # putting all data
-    for i in xrange(0, N, args.batchsize):
-        x_batch = test_dl[i:i + args.batchsize]
-        input_q.put(x_batch)
+    input_q.put(test_dl)
 
     # training
     for i in xrange(0, N, args.batchsize):
-        input_data, label = data_q.get(True, None)
+        input_data, cls, obj_prs, label = data_q.get(True, None)
 
-        if args.gpu >= 0:
-            input_data = cuda.to_gpu(input_data.astype(np.float32))
-            label = cuda.to_gpu(label.astype(np.float32))
-
-        loss, pred = model.forward(input_data, label, train=False)
+        input_data = xp.asarray(input_data)
+        cls = xp.asarray(cls)
+        rects = xp.asarray(rects)
+        label = xp.asarray(label)
+        cls_score,bbox_pred, loss = model.forward(input_data, rects, cls, label, train=False)
         sum_loss += float(cuda.to_cpu(loss.data)) * batchsize
         pbar.update(i + args.batchsize if (i + args.batchsize) < N else N)
 
@@ -192,7 +223,7 @@ def parse_args():
     parser.add_argument('--conf', type=float, default=0.8)
     parser.add_argument('--epoch', type=int, default=150)
     parser.add_argument('--epoch_offset', type=int, default=0)
-    parser.add_argument('--batchsize', type=int, default=128)
+    parser.add_argument('--batchsize','-b', type=int, default=128)
     parser.add_argument('--restart_from', '-r', type=str)
     parser.add_argument('--model', '-m', type=str, default='VGG')
     parser.add_argument('--channel', '-c', type=int, default=3)
@@ -203,26 +234,28 @@ def parse_args():
     return args
 
 def train(train_dl, N, model, optimizer, args, input_q, data_q):
+    if args.gpu >= 0:
+        xp = cuda.cupy if cuda.available else np
+    else:
+        xp = np
     widgets = ["Training : ", Percentage(), Bar()]
     pbar = ProgressBar(maxval = N, widgets = widgets).start()
     sum_loss = 0
 
     # putting all data
-    for i in range(0, N, 2):
-        x_batch = train_dl[perm[i:i + 2]]
-
-        input_q.put(x_batch)
+    input_q.put(train_dl)
 
     # training
     for i in range(0, N, args.batchsize):
-        input_data, label = data_q.get()
-        print (input_data.shape, label.shape)
-        if args.gpu >= 0:
-            input_data = cuda.to_gpu(input_data.astype(np.float32))
-            label = cuda.to_gpu(label.astype(np.float32))
+        input_data, cls, rects, label = data_q.get()
+        print ('input=',input_data.shape,cls, rects.shape, label.shape)
+        input_data = xp.asarray(input_data)
+        cls = xp.asarray(cls)
+        rects = xp.asarray(rects)
+        label = xp.asarray(label)
 
         optimizer.zero_grads()
-        loss, pred = model.forward(input_data, label, train=True)
+        cls_score,bbox_pred, loss = model.forward(input_data, rects, cls, label, train=True)
         loss.backward()
         optimizer.update()
 
@@ -230,20 +263,6 @@ def train(train_dl, N, model, optimizer, args, input_q, data_q):
         pbar.update(i + args.batchsize if (i + args.batchsize) < N else N)
 
     return sum_loss
-
-
-def img_preprocessing(orig_img, pixel_means, max_size=1000, scale=600):
-    img = orig_img.astype(np.float32, copy=True)
-    #img -= pixel_means
-    im_size_min = np.min(img.shape[0:2])
-    im_size_max = np.max(img.shape[0:2])
-    im_scale = float(scale) / float(im_size_min)
-    if np.rint(im_scale * im_size_max) > max_size:
-        im_scale = float(max_size) / float(im_size_max)
-    img = cv.resize(img, None, None, fx=im_scale, fy=im_scale,
-                    interpolation=cv.INTER_LINEAR)
-
-    return img.transpose([2, 0, 1]).astype(np.float32), im_scale
 
 def get_bboxes(orig_img, im_scale, min_size, dedup_boxes=1./16):
     rects=[]
@@ -253,18 +272,16 @@ def get_bboxes(orig_img, im_scale, min_size, dedup_boxes=1./16):
 
     # bbox pre-processing
     rects *= im_scale
-    print (rects)
     v = np.array([1, 1e3, 1e6, 1e9, 1e12])
     hashes = np.round(rects * dedup_boxes).dot(v)
     _, index, inv_index = np.unique(hashes, return_index=True,
                                     return_inverse=True)
     rects = rects[index, :]
 
-    return rects
+    return rects[1:5]
 
 if __name__ == '__main__':
     args = parse_args()
-    data_dir = '%s/data/panorama/images' % OMPOSE_PATH
 
     if args.gpu >= 0:
         xp = cuda.cupy if cuda.available else np
