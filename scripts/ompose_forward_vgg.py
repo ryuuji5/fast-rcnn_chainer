@@ -25,7 +25,7 @@ PIXEL_MEANS = np.array([102.9801, 115.9465, 122.7717], dtype=np.float32)
 
 
 def get_model():
-    vgg = pickle.load(open('models/VGG.chainermodel'))
+    vgg = pickle.load(open('models/VGG16.chainermodel'))
     #vgg.to_gpu()
     if args.gpu >= 0:
         vgg.to_gpu()
@@ -52,7 +52,6 @@ def get_bboxes(orig_img, im_scale, min_size, dedup_boxes=1. / 16):
     dlib.find_candidate_object_locations(orig_img, rects, min_size=min_size)
     rects = [[0, d.left(), d.top(), d.right(), d.bottom()] for d in rects]
     rects = np.asarray(rects, dtype=np.float32)
-
     # bbox pre-processing
     rects *= im_scale
     v = np.array([1, 1e3, 1e6, 1e9, 1e12])
@@ -69,6 +68,7 @@ def draw_result(out, im_scale, clss, bbox, rects, nms_thresh, conf, im_name):
                     interpolation=cv.INTER_LINEAR)
     for cls_id in range(1, 21):
         _cls = clss[:, cls_id][:, np.newaxis]
+        print(_cls.shape)
         _bbx = bbox[:, cls_id * 4: (cls_id + 1) * 4]
         dets = np.hstack((_bbx, _cls))
         keep = nms(dets, nms_thresh)
@@ -103,16 +103,15 @@ def draw_result(out, im_scale, clss, bbox, rects, nms_thresh, conf, im_name):
             else:
                 print >> other_write, ('1,%s,%s,%s,%s,%s,%s,%s') %(CLASSES[cls_id], os.path.basename(im_name),x1,y1,x2,y2,dets[i,4])
 
-            """
+            
             cv.rectangle(out, (int(x1), int(y1)), (int(x2), int(y2)),
                          (0, 0, 255), 2)
             ret, baseline = cv.getTextSize(CLASSES[cls_id],
                                            cv.FONT_HERSHEY_SIMPLEX, 1.0, 1)
-            cv.rectangle(out, (int(x1), int(y2) - ret[1] - baseline),
-                         (int(x1) + ret[0], int(y2)), (0, 0, 255), -1)
-            cv.putText(out, CLASSES[cls_id], (int(x1), int(y2) - baseline),
+            cv.rectangle(out, (int(x2), int(y2) - ret[1] - baseline),
+                         (int(x2) + ret[0], int(y2)), (0, 0, 255), -1)
+            cv.putText(out, CLASSES[cls_id], (int(x2), int(y2) - baseline),
                        cv.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 1)
-            """
             print CLASSES[cls_id], dets[i, 4]
 
     return out
@@ -146,15 +145,17 @@ if __name__ == '__main__':
             img, im_scale = img_preprocessing(orig_image, PIXEL_MEANS)
             start_time = time.time()
             orig_rects = get_bboxes(orig_image, im_scale, min_size=args.min_size)
-
+            clss = np.ones(len(orig_rects), dtype = np.int32)
+            gt = np.ones((len(orig_rects),4), dtype = np.float32)
             img = xp.asarray(img)
             rects = xp.asarray(orig_rects)
-
-            cls_score, bbox_pred = vgg.forward(img[xp.newaxis, :, :, :], rects)
+            clss = xp.asarray(clss)
+            gt = xp.asarray(gt)
+            cls_score, bbox_pred= vgg.forward(img[xp.newaxis, :, :, :], rects)
             print('detection took {:.3f}s').format(time.time()-start_time)
 
             clss = cuda.cupy.asnumpy(cls_score.data) if args.gpu >= 0 else cls_score.data
             bbox = cuda.cupy.asnumpy(bbox_pred.data) if args.gpu >= 0 else bbox_pred.data
             result = draw_result(orig_image, im_scale, clss, bbox, orig_rects, args.nms_thresh, args.conf, im_name)
-            #cv.imwrite('output/panorama/%s'%datum[1], result)
+            cv.imwrite('output/panorama/%s'%datum[1], result)
     pbar.finish()

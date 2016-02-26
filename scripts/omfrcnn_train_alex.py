@@ -13,7 +13,6 @@ Demo script showing detections in sample images.
 See README.md for installation instructions before running.
 """
 
-import os
 import sys
 sys.path.insert(0, 'models')
 sys.path.insert(0, 'fast-rcnn/lib/utils')
@@ -23,14 +22,12 @@ import cv2 as cv
 import numpy as np
 import cPickle as pickle
 from chainer import cuda, optimizers, Variable
-import chainer
-print('chainer Ver = %s'% chainer.__version__)
 from cython_nms import nms
 from progressbar import *
-from VGG import VGG
 import random
 from multiprocessing import Process, Queue
 import logging
+import imp
 
 PIXEL_MEANS = np.array([102.9801, 115.9465, 122.7717], dtype=np.float32)
 random.seed(1741)
@@ -40,7 +37,7 @@ NETS = {'vgg16': ('VGG16',
         'vgg_cnn_m_1024': ('VGG_CNN_M_1024',
                            'VGG_CNN_M_1024.chainermodel'),
         'caffenet': ('CaffeNet',
-                     'CaffeNet.chainermodel')}
+                     'alex_person.chainermodel')}
 
 OMPOSE_PATH = '/home/aolab/Codes/ompose'
 data_dir = '%s/data/normal/images' % OMPOSE_PATH
@@ -74,11 +71,16 @@ def create_result_dir(args):
 
 def get_model_optimizer(result_dir, args):
     print('model setting')
+    model_fn = 'models/CaffeNet_person.py'
+    model_name = 'CaffeNet'
+    #module = imp.load_source(model_name, model_fn)
+    #Net = getattr(module, model_name)
     model = pickle.load(open('models/%s'%NETS[args.net][1]))
+    #model=Net()
     model.to_gpu()
 
     # prepare optimizer
-    optimizer = optimizers.AdaGrad(lr=0.0005)
+    optimizer = optimizers.SGD(lr=0.01)
     optimizer.setup(model)
 
     return model, optimizer
@@ -87,10 +89,10 @@ def fliplr(args, img, train_dl, rects):
     if np.random.randint(2) == 1 and args.flip == True:
         img = cv.flip(img,1)
         img_col = np.float32(img.shape[1])
-        train_dl[0] = img_col - train_dl[0]
-        train_dl[2] = img_col - train_dl[2]
-        rects[0] = img_col - rects[0]
-        rects[2] = img_col - rects[2]
+        train_dl[1] = img_col - train_dl[1]
+        train_dl[3] = img_col - train_dl[3]
+        rects[1] = img_col - rects[1]
+        rects[3] = img_col - rects[3]
     return img, train_dl, rects
 
 def load_data(args, input_q, data_q):
@@ -144,11 +146,9 @@ def load_data(args, input_q, data_q):
                 elif IoU >= 0.1 and n_count <= p_count*3:
                     cls[p_count + n_count -1] = 0
                     n_count += 1
-                else:
-                    'none...'
-                    continue
+
                 input_data[p_count + n_count -1] = img.transpose((2,0,1))
-                label_data[p_count + n_count -1] = gt / 750
+                label_data[p_count + n_count -1] = gt/750
                 obj_prs[p_count + n_count -1] = np.hstack([0,rects])
                 if p_count + n_count == args.batchsize:
                     p_count = 0
@@ -183,7 +183,8 @@ def eval(test_dl, N, model, trans, args, input_q, data_q):
         rects = xp.asarray(rects)
         label = xp.asarray(label)
         cls_score,bbox_pred, l1_loss, cls_loss = model.forward(input_data, rects, cls, label, train=False)
-        loss = l1_loss + cls_loss
+        print(cls_loss.data, cls_loss.data*[0,1])
+        loss = l1_loss.data*cls + cls_loss*[0,1]
         sum_loss += np.sum(loss.data)
 
     return sum_loss
@@ -192,7 +193,7 @@ def get_log_msg(stage, epoch, sum_loss, N, args, st):
     msg = 'epoch:{:02d}\t{} mean loss={}\telapsed time={} sec'.format(
         epoch + args.epoch_offset,
         stage,
-        sum_loss / N,
+        sum_loss,
         time.time() - st)
 
     return msg
@@ -206,7 +207,7 @@ def parse_args():
                         help='Use CPU mode (overrides --gpu)',
                         action='store_true')
     parser.add_argument('--net', help='Network to use [vgg16]',
-                        choices=NETS.keys(), default='vgg16')
+                        choices=NETS.keys(), default='caffenet')
     parser.add_argument('--result', dest='result_dir', help='path to result_dir')
     parser.add_argument('--min_size', type=int, default=500)
     parser.add_argument('--nms_thresh', type=float, default=0.3)
@@ -215,8 +216,9 @@ def parse_args():
     parser.add_argument('--epoch_offset', type=int, default=0)
     parser.add_argument('--batchsize','-b', type=int, default=128)
     parser.add_argument('--restart_from', '-r', type=str)
-    parser.add_argument('--model', '-m', type=str, default='VGG_person')
+    parser.add_argument('--model', '-m', type=str, default='Alex_person')
     parser.add_argument('--channel', '-c', type=int, default=3)
+    parser.add_argument('--snapshot', '-ss', type=int, default=5)
     parser.add_argument('--flip', type=bool, default=True)
 
     args = parser.parse_args()
@@ -234,7 +236,10 @@ def train(train_dl, N, model, optimizer, args, input_q, data_q):
 
     # putting all data
     print('input')
-    input_q.put(train_dl[perm])
+    #for i in range(0, N, N/10):
+    #    input_q.put(train_dl[perm[i:i+N/10]])
+    #input_q.put(train_dl[perm])
+    input_q.put(train_dl[:16])
     input_q.put(None)
     # training
     while True:
@@ -247,10 +252,10 @@ def train(train_dl, N, model, optimizer, args, input_q, data_q):
         label = xp.asarray(label)
 
         optimizer.zero_grads()
-        cls_score,bbox_pred, loss = model.forward(input_data[:, :, :], rects, cls, label, train=True)
+        cls_score,bbox_pred, loss = model.forward(input_data, rects, cls, label, train=True)
         loss.backward()
         optimizer.update()
-        sum_loss += np.sum(loss.data)
+        sum_loss += np.sum(loss.data) / args.batchsize
     return sum_loss
 
 if __name__ == '__main__':
@@ -290,7 +295,7 @@ if __name__ == '__main__':
         st = time.time()
         print('Training Step:', epoch)
         sum_loss= train(train_dl, N, model, optimizer, args, input_q, data_q)
-        print('next training')
+        print(sum_loss)
         msg = get_log_msg('training', epoch, sum_loss, N, args, st)
         logging.info(msg)
         print(msg)
@@ -298,10 +303,10 @@ if __name__ == '__main__':
         #quit data loading thread
         input_q.put(None)
         data_loader.join()
-        print(result_dir)
-        model_fn = '%s/vgg_person_epoch_%d.chainermodel' % (
-            result_dir, epoch + args.epoch_offset)
-        pickle.dump(model, open(model_fn, 'wb'), -1)
+        if epoch == 1 or (epoch+args.epoch_offset) % args.snapshot == 0:
+            model_fn = '%s/alex_person_epoch_%d.chainermodel' % (
+                result_dir, epoch + args.epoch_offset)
+            pickle.dump(model, open(model_fn, 'wb'), -1)
 
     input_q.put(None)
     data_loader.join()
