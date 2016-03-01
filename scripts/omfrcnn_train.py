@@ -32,7 +32,7 @@ import random
 from multiprocessing import Process, Queue
 import logging
 
-PIXEL_MEANS = np.array([102.9801, 115.9465, 122.7717], dtype=np.float32)
+PIXEL_MEANS = np.array([97.566359191178279, 106.43752413089281, 92.941614945334464], dtype=np.float32)
 random.seed(1741)
 
 NETS = {'vgg16': ('VGG16',
@@ -78,7 +78,8 @@ def get_model_optimizer(result_dir, args):
     model.to_gpu()
 
     # prepare optimizer
-    optimizer = optimizers.AdaGrad(lr=0.0005)
+    #optimizer = optimizers.AdaGrad(lr=0.0005)
+    optimizer = optimizers.AdaGrad(lr=0.001)
     optimizer.setup(model)
 
     return model, optimizer
@@ -118,20 +119,36 @@ def load_data(args, input_q, data_q):
                 continue
             orig_img = cv.imread('%s/%s'%(data_dir,x[0]))
             #print(i, x[0])
-            img = orig_img[50:800, 650:1400]
-            img = cv.resize(img,(500,500))
+            img = orig_img[50:800, 650:1400].astype(np.float32, copy=True)
+            img -= PIXEL_MEANS
+            #img = cv.resize(img,(500,500))
+            img = cv.resize(img,(w,h), interpolation=cv.INTER_LINEAR)
             gt = np.asarray(x[1:5],dtype = np.float32)
             gt[0] -= 650 
             gt[1] -=  50
             gt[2] -= 650 
             gt[3] -=  50
+            gt *= w
+            gt /= 750
+            c_t_x = np.average([gt[0],gt[2]])
+            c_t_y = np.average([gt[1],gt[3]])
             perm = np.random.permutation(len(orig_rects))
             orig_rects = np.array(orig_rects)[perm]
+            perm2 = np.random.permutation(args.batchsize)
             for j, rects in enumerate(orig_rects):
+                label = np.zeros(4)
                 rects = np.asarray(rects.split(','))
                 IoU = float(rects[0])
                 rects = np.asarray(rects[1:5], dtype = np.float32)
+                rects *= w
+                rects /= 750
                 img, gt, rects = fliplr(args,img, gt, rects)
+                c_r_x = np.average([rects[0],rects[2]])
+                c_r_y = np.average([rects[1],rects[3]])
+                label[0] = (c_t_x - c_r_x) / abs(rects[0]-rects[2])
+                label[1] = (c_t_y - c_r_y) / abs(rects[1]-rects[3])
+                label[2] = np.log(abs(rects[0]-rects[2]) / abs(gt[0]-gt[2]))
+                label[3] = np.log(abs(rects[1]-rects[3]) / abs(gt[1]-gt[3]))
                 if IoU > 0.5:
                     '''
                     cv.rectangle(img, (gt[0],gt[1]),(gt[2],gt[3]),(255,0,0), 2)
@@ -141,23 +158,28 @@ def load_data(args, input_q, data_q):
                     '''
                     cls[p_count + n_count -1] = 1
                     p_count += 1
-                elif IoU >= 0.1 and n_count <= p_count*3:
+                elif IoU >= 0.1 and n_count < p_count*3:
                     cls[p_count + n_count -1] = 0
                     n_count += 1
                 else:
                     'none...'
                     continue
                 input_data[p_count + n_count -1] = img.transpose((2,0,1))
-                label_data[p_count + n_count -1] = gt / 750
+                label_data[p_count + n_count -1] = label
                 obj_prs[p_count + n_count -1] = np.hstack([0,rects])
                 if p_count + n_count == args.batchsize:
                     p_count = 0
                     n_count = 0        
-                    input_data = np.asarray(input_data, dtype = np.float32)
-                    label_data = np.asarray(label_data, dtype = np.float32)
-                    obj_prs = np.asarray(obj_prs, dtype = np.float32)
-                    cls = np.asarray(cls, dtype = np.int32)
+                    input_data = np.asarray(input_data[perm2], dtype = np.float32)
+                    label_data = np.asarray(label_data[perm2], dtype = np.float32)
+                    obj_prs = np.asarray(obj_prs[perm2], dtype = np.float32)
+                    cls = np.asarray(cls[perm2], dtype = np.int32)
                     data_q.put([input_data, cls, obj_prs, label_data])
+                    input_data = np.zeros((args.batchsize, c, h, w))
+                    label_data = np.zeros((args.batchsize, 4))
+                    obj_prs = np.zeros((args.batchsize, 5))
+                    cls = np.zeros((args.batchsize))
+                    perm2 = np.random.permutation(args.batchsize)
             pbar.update(i if (i) < len(all_data) else len(all_data))
 
     data_q.put([None,None,None,None])
@@ -192,7 +214,7 @@ def get_log_msg(stage, epoch, sum_loss, N, args, st):
     msg = 'epoch:{:02d}\t{} mean loss={}\telapsed time={} sec'.format(
         epoch + args.epoch_offset,
         stage,
-        sum_loss / N,
+        sum_loss,
         time.time() - st)
 
     return msg
@@ -235,7 +257,9 @@ def train(train_dl, N, model, optimizer, args, input_q, data_q):
     # putting all data
     print('input')
     input_q.put(train_dl[perm])
+    #input_q.put(train_dl[:16])
     input_q.put(None)
+    t_count=0
     # training
     while True:
         input_data, cls, rects, label = data_q.get()
@@ -250,7 +274,9 @@ def train(train_dl, N, model, optimizer, args, input_q, data_q):
         cls_score,bbox_pred, loss = model.forward(input_data[:, :, :], rects, cls, label, train=True)
         loss.backward()
         optimizer.update()
-        sum_loss += np.sum(loss.data)
+        sum_loss += np.sum(loss.data) / (args.batchsize)
+        t_count += 1
+    sum_loss /= t_count
     return sum_loss
 
 if __name__ == '__main__':
@@ -299,9 +325,10 @@ if __name__ == '__main__':
         input_q.put(None)
         data_loader.join()
         print(result_dir)
-        model_fn = '%s/vgg_person_epoch_%d.chainermodel' % (
-            result_dir, epoch + args.epoch_offset)
-        pickle.dump(model, open(model_fn, 'wb'), -1)
+        if epoch%5 == 0:
+            model_fn = '%s/vgg_person_epoch_%d.chainermodel' % (
+                result_dir, epoch + args.epoch_offset)
+            pickle.dump(model, open(model_fn, 'wb'), -1)
 
     input_q.put(None)
     data_loader.join()

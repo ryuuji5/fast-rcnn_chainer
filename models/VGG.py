@@ -74,7 +74,6 @@ class VGG(FunctionSet):
         cls_loss = -F.log(cls_prob)
         l1_loss = smooth_l1_loss(bbox_pred, t)
         cls_loss = F.select_item(cls_loss, cls)
-        loss = cls_loss + l1_loss
-
+        loss = cls_loss + l1_loss*cls_mask
 
         return cls_prob, bbox_pred, loss
